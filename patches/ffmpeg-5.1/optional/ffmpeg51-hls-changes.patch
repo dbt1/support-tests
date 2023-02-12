@@ -1,0 +1,57 @@
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index e622425e80..faf92804a2 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -46,7 +46,7 @@
+ 
+ #include "hls_sample_encryption.h"
+ 
+-#define INITIAL_BUFFER_SIZE 32768
++#define INITIAL_BUFFER_SIZE 1048576
+ 
+ #define MAX_FIELD_LEN 64
+ #define MAX_CHARACTERISTICS_LEN 512
+@@ -1580,7 +1580,7 @@ reload:
+ 
+     seg = next_segment(v);
+     if (c->http_multiple == 1 && !v->input_next_requested &&
+-        seg && seg->key_type == KEY_NONE && av_strstart(seg->url, "http", NULL)) {
++        seg && seg->key_type != KEY_AES_128 && av_strstart(seg->url, "http", NULL)) {
+         ret = open_input(c, v, seg, &v->input_next);
+         if (ret < 0) {
+             if (ff_check_interrupt(c->interrupt_callback))
+@@ -1613,7 +1613,7 @@ reload:
+         return ret;
+     }
+     if (c->http_persistent &&
+-        seg->key_type == KEY_NONE && av_strstart(seg->url, "http", NULL)) {
++        seg->key_type != KEY_AES_128 && av_strstart(seg->url, "http", NULL)) {
+         v->input_read_done = 1;
+     } else {
+         ff_format_io_close(v->parent, &v->input);
+@@ -2475,6 +2475,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+     /* set segment now so we do not need to search again below */
+     seek_pls->cur_seq_no = seq_no;
+     seek_pls->seek_stream_index = stream_subdemuxer_index;
++    //av_log(s, AV_LOG_INFO, "Seek to %d in %d\n", seq_no, stream_subdemuxer_index);
+ 
+     for (i = 0; i < c->n_playlists; i++) {
+         /* Reset reading */
+@@ -2535,7 +2536,7 @@ static const AVOption hls_options[] = {
+         OFFSET(prefer_x_start), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, FLAGS},
+     {"allowed_extensions", "List of file extensions that hls is allowed to access",
+         OFFSET(allowed_extensions), AV_OPT_TYPE_STRING,
+-        {.str = "3gp,aac,avi,ac3,eac3,flac,mkv,m3u8,m4a,m4s,m4v,mpg,mov,mp2,mp3,mp4,mpeg,mpegts,ogg,ogv,oga,ts,vob,wav"},
++        {.str = "3gp,aac,avi,ac3,eac3,flac,key,mkv,m3u8,m4a,m4s,m4v,mpg,mov,mp2,mp3,mp4,mpeg,mpegts,ogg,ogv,oga,ts,vob,wav"},
+         INT_MIN, INT_MAX, FLAGS},
+     {"max_reload", "Maximum number of times a insufficient list is attempted to be reloaded",
+         OFFSET(max_reload), AV_OPT_TYPE_INT, {.i64 = 1000}, 0, INT_MAX, FLAGS},
+@@ -2544,7 +2545,7 @@ static const AVOption hls_options[] = {
+     {"http_persistent", "Use persistent HTTP connections",
+         OFFSET(http_persistent), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, FLAGS },
+     {"http_multiple", "Use multiple HTTP connections for fetching segments",
+-        OFFSET(http_multiple), AV_OPT_TYPE_BOOL, {.i64 = -1}, -1, 1, FLAGS},
++        OFFSET(http_multiple), AV_OPT_TYPE_BOOL, {.i64 = 0}, -1, 1, FLAGS},
+     {"http_seekable", "Use HTTP partial requests, 0 = disable, 1 = enable, -1 = auto",
+         OFFSET(http_seekable), AV_OPT_TYPE_BOOL, { .i64 = -1}, -1, 1, FLAGS},
+     {"seg_format_options", "Set options for segment demuxer",

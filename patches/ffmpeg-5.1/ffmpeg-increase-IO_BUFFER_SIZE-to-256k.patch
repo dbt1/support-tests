@@ -1,0 +1,26 @@
+From f193409d354a41d8afaf1b75ca34dc1839a60b69 Mon Sep 17 00:00:00 2001
+From: gandharva <gandharva@gmx.de>
+Date: Wed, 14 Jun 2017 19:51:24 +0200
+Subject: [PATCH 8/8] - increase IO_BUFFER_SIZE to 128k
+
+performance improvement when using SMB/CIFS
+---
+ libavformat/aviobuf.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libavformat/aviobuf.c b/libavformat/aviobuf.c
+index c2681ed..711fff8 100644
+--- a/libavformat/aviobuf.c
++++ b/libavformat/aviobuf.c
+@@ -33,7 +33,7 @@
+ #include "url.h"
+ #include <stdarg.h>
+ 
+-#define IO_BUFFER_SIZE 32768
++#define IO_BUFFER_SIZE 262144
+ 
+ /**
+  * Do seeks within this distance ahead of the current buffer by skipping
+-- 
+2.1.4
+

@@ -1,0 +1,333 @@
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+index 457ec58377..49bf260764 100644
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -1209,6 +1209,8 @@ OBJS-$(CONFIG_SETTS_BSF)                  += setts_bsf.o
+ OBJS-$(CONFIG_TEXT2MOVSUB_BSF)            += movsub_bsf.o
+ OBJS-$(CONFIG_TRACE_HEADERS_BSF)          += trace_headers_bsf.o
+ OBJS-$(CONFIG_TRUEHD_CORE_BSF)            += truehd_core_bsf.o mlp_parse.o mlp.o
++OBJS-$(CONFIG_VC1_ASFTORCV_BSF)           += vc1_asftorcv_bsf.o
++OBJS-$(CONFIG_VC1_ASFTOANNEXG_BSF)        += vc1_asftoannexg_bsf.o vc1.o
+ OBJS-$(CONFIG_VP9_METADATA_BSF)           += vp9_metadata_bsf.o
+ OBJS-$(CONFIG_VP9_RAW_REORDER_BSF)        += vp9_raw_reorder_bsf.o
+ OBJS-$(CONFIG_VP9_SUPERFRAME_BSF)         += vp9_superframe_bsf.o
+diff --git a/libavcodec/bitstream_filters.c b/libavcodec/bitstream_filters.c
+index 444423ae93..482d3473b2 100644
+--- a/libavcodec/bitstream_filters.c
++++ b/libavcodec/bitstream_filters.c
+@@ -59,6 +59,8 @@ extern const FFBitStreamFilter ff_setts_bsf;
+ extern const FFBitStreamFilter ff_text2movsub_bsf;
+ extern const FFBitStreamFilter ff_trace_headers_bsf;
+ extern const FFBitStreamFilter ff_truehd_core_bsf;
++extern const FFBitStreamFilter ff_vc1_asftoannexg_bsf;
++extern const FFBitStreamFilter ff_vc1_asftorcv_bsf;
+ extern const FFBitStreamFilter ff_vp9_metadata_bsf;
+ extern const FFBitStreamFilter ff_vp9_raw_reorder_bsf;
+ extern const FFBitStreamFilter ff_vp9_superframe_bsf;
+diff --git a/libavcodec/vc1_asftoannexg_bsf.c b/libavcodec/vc1_asftoannexg_bsf.c
+new file mode 100644
+index 0000000000..2901f84d9c
+--- /dev/null
++++ b/libavcodec/vc1_asftoannexg_bsf.c
+@@ -0,0 +1,190 @@
++/*
++ * copyright (c) 2010 Google Inc.
++ * copyright (c) 2013 CoolStream International Ltd.
++ * copyright (c) 2017 Jacek Jendrzej port to 3.x
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include "avcodec.h"
++#include "bytestream.h"
++#include "vc1.h"
++#include "bsf.h"
++#include "bsf_internal.h"
++
++// An arbitrary limit in bytes greater than the current bytes used.
++#define MAX_SEQ_HEADER_SIZE 50
++
++typedef struct ASFTOANNEXGBSFContext {
++    int frames;
++    uint8_t *seq_header;
++    int seq_header_size;
++    uint8_t *ep_header;
++    int ep_header_size;
++} ASFTOANNEXGBSFContext;
++
++static int find_codec_data(ASFTOANNEXGBSFContext *ctx, uint8_t *data, int data_size, int keyframe) {
++    const uint8_t *start = data;
++    const uint8_t *end = data + data_size;
++    const uint8_t *next;
++    int size;
++    int has_seq_header = 0;
++    int has_ep_header = 0;
++    int has_frame_header = 0;
++
++    start = find_next_marker(start, end);
++    next = start;
++    for(; next < end; start = next){
++        next = find_next_marker(start + 4, end);
++        size = next - start;
++        if(size <= 0) continue;
++        switch(AV_RB32(start)){
++        case VC1_CODE_SEQHDR:
++            has_seq_header = 1;
++            break;
++        case VC1_CODE_ENTRYPOINT:
++            has_ep_header = 1;
++            break;
++        case VC1_CODE_FRAME:
++            has_frame_header = 1;
++            break;
++        default:
++            break;
++        }
++    }
++
++    if((has_seq_header && has_ep_header && has_frame_header && keyframe) ||
++       (!has_seq_header && !has_ep_header && has_frame_header) ) return 0;
++
++    return -1;
++}
++
++static int parse_extradata(ASFTOANNEXGBSFContext *ctx, uint8_t *extradata, int extradata_size) {
++    const uint8_t *start = extradata;
++    const uint8_t *end = extradata + extradata_size;
++    const uint8_t *next;
++    int size;
++
++    start = find_next_marker(start, end);
++    next = start;
++    for(; next < end; start = next){
++        next = find_next_marker(start + 4, end);
++        size = next - start;
++        if(size <= 0) continue;
++        switch(AV_RB32(start)){
++        case VC1_CODE_SEQHDR:
++            ctx->seq_header = av_mallocz(size);
++            ctx->seq_header_size = size;
++            memcpy(ctx->seq_header, start, size);
++            break;
++        case VC1_CODE_ENTRYPOINT:
++            ctx->ep_header = av_malloc(size);
++            ctx->ep_header_size = size;
++            memcpy(ctx->ep_header, start, size);
++            break;
++        default:
++            break;
++        }
++    }
++
++    if(!ctx->seq_header || !ctx->ep_header) {
++        av_log(NULL, AV_LOG_ERROR, "Incomplete extradata\n");
++        return -1;
++    }
++    return 0;
++}
++
++static int asftoannexg_filter(AVBSFContext *ctx, AVPacket *out)
++{
++    ASFTOANNEXGBSFContext* bsfctx = ctx->priv_data;
++    AVPacket *in;
++    int keyframe;
++    int ret;
++    uint8_t* bs = NULL;
++
++    ret = ff_bsf_get_packet(ctx, &in);
++    if (ret < 0)
++        return ret;
++
++    keyframe = in->flags & AV_PKT_FLAG_KEY;
++    if(in->size >= 1 && !find_codec_data(bsfctx, in->data, in->size, keyframe)) {
++//         av_log(NULL, AV_LOG_INFO, "Nothing to do: %i\n",in->size);
++        av_packet_move_ref(out, in);
++        av_packet_free(&in);
++        return 0;
++    }
++
++    if(!ctx->par_in->extradata || ctx->par_in->extradata_size < 16) {
++        av_log(NULL, AV_LOG_INFO, "Extradata size too small: %i\n", ctx->par_in->extradata_size);
++        av_packet_move_ref(out, in);
++        av_packet_free(&in);
++        return 0;
++    }
++
++    if (!bsfctx->frames && parse_extradata(bsfctx, ctx->par_in->extradata , ctx->par_in->extradata_size) < 0) {
++        av_packet_free(&in);
++        av_log(NULL, AV_LOG_ERROR, "Cannot parse extra data!\n");
++        return -1;
++    }
++
++    if (keyframe) {
++        // If this is the keyframe, need to put sequence header and entry point header.
++        ret = av_new_packet(out, bsfctx->seq_header_size + bsfctx->ep_header_size + 4 + in->size);
++        if (ret < 0)
++            goto exit;
++        bs = out->data;
++
++        memcpy(bs, bsfctx->seq_header, bsfctx->seq_header_size);
++        bs += bsfctx->seq_header_size;
++        memcpy(bs, bsfctx->ep_header, bsfctx->ep_header_size);
++        bs += bsfctx->ep_header_size;
++    } else {
++        ret = av_new_packet(out, 4 + in->size);
++        if (ret < 0)
++            goto exit;
++        bs = out->data;
++    }
++
++    // Put the frame start code and frame data.
++    bytestream_put_be32(&bs, VC1_CODE_FRAME);
++    memcpy(bs, in->data, in->size);
++    ++bsfctx->frames;
++
++    ret = av_packet_copy_props(out, in);
++
++exit:
++    av_packet_free(&in);
++
++    return ret;
++}
++
++static void asftoannexg_close(AVBSFContext *bsfc) {
++    ASFTOANNEXGBSFContext *bsfctx = bsfc->priv_data;
++    av_freep(&bsfctx->seq_header);
++    av_freep(&bsfctx->ep_header);
++}
++
++static const enum AVCodecID codec_ids[] = {
++    AV_CODEC_ID_VC1, AV_CODEC_ID_NONE,
++};
++
++FFBitStreamFilter ff_vc1_asftoannexg_bsf = {
++    .p.name         = "vc1_asftoannexg",
++    .priv_data_size = sizeof(ASFTOANNEXGBSFContext),
++    .filter         = asftoannexg_filter,
++    .close          = asftoannexg_close,
++    .p.codec_ids    = codec_ids,
++};
+diff --git a/libavcodec/vc1_asftorcv_bsf.c b/libavcodec/vc1_asftorcv_bsf.c
+new file mode 100644
+index 0000000000..02e510b4b6
+--- /dev/null
++++ b/libavcodec/vc1_asftorcv_bsf.c
+@@ -0,0 +1,105 @@
++/*
++ * copyright (c) 2010 Google Inc.
++ * copyright (c) 2017 Jacek Jendrzej port to 3.x
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include "avcodec.h"
++#include "bytestream.h"
++#include "bsf.h"
++#include "bsf_internal.h"
++
++#define RCV_STREAM_HEADER_SIZE 36
++#define RCV_PICTURE_HEADER_SIZE 8
++
++typedef struct ASFTORCVBSFContext {
++    int frames;
++} ASFTORCVBSFContext;
++
++static int asftorcv_filter(AVBSFContext *ctx, AVPacket *out){
++    ASFTORCVBSFContext* bsfctx = ctx->priv_data;
++    AVPacket *in;
++    int keyframe;
++    int ret;
++    uint8_t* bs = NULL;
++
++    ret = ff_bsf_get_packet(ctx, &in);
++    if (ret < 0)
++        return ret;
++
++    keyframe = in->flags & AV_PKT_FLAG_KEY;
++
++    if (!bsfctx->frames) {
++        // Write the header if this is the first frame.
++        ret = av_new_packet(out, RCV_STREAM_HEADER_SIZE + RCV_PICTURE_HEADER_SIZE + in->size);
++        if (ret < 0)
++            goto exit;
++        bs = out->data;
++
++        // The following structure of stream header comes from libavformat/vc1testenc.c.
++        bytestream_put_le24(&bs, 0);  // Frame count. 0 for streaming.
++        bytestream_put_byte(&bs, 0xC5);
++        bytestream_put_le32(&bs, 4);  // 4 bytes of extra data.
++        bytestream_put_byte(&bs, ctx->par_in->extradata[0]);
++        bytestream_put_byte(&bs, ctx->par_in->extradata[1]);
++        bytestream_put_byte(&bs, ctx->par_in->extradata[2]);
++        bytestream_put_byte(&bs, ctx->par_in->extradata[3]);
++        bytestream_put_le32(&bs, ctx->par_in->height);
++        bytestream_put_le32(&bs, ctx->par_in->width);
++        bytestream_put_le32(&bs, 0xC);
++        bytestream_put_le24(&bs, 0);  // hrd_buffer
++        bytestream_put_byte(&bs, 0x80);  // level|cbr|res1
++        bytestream_put_le32(&bs, 0);  // hrd_rate
++
++        // The following LE32 describes the frame rate. Since we don't care so fill
++        // it with 0xFFFFFFFF which means variable framerate.
++        // See: libavformat/vc1testenc.c
++        bytestream_put_le32(&bs, 0xFFFFFFFF);
++    } else {
++        ret = av_new_packet(out, RCV_PICTURE_HEADER_SIZE + in->size);
++        if (ret < 0)
++            goto exit;
++        bs = out->data;
++    }
++
++    // Write the picture header.
++    bytestream_put_le32(&bs, in->size | (keyframe ? 0x80000000 : 0));
++
++    //  The following LE32 describes the pts. Since we don't care so fill it with 0.
++    bytestream_put_le32(&bs, 0);
++    memcpy(bs, in->data, in->size);
++
++    ++bsfctx->frames;
++
++    ret = av_packet_copy_props(out, in);
++
++exit:
++    av_packet_free(&in);
++
++    return ret;
++}
++
++static const enum AVCodecID codec_ids[] = {
++    AV_CODEC_ID_WMV3, AV_CODEC_ID_NONE,
++};
++
++FFBitStreamFilter ff_vc1_asftorcv_bsf = {
++    .p.name 	    = "vc1_asftorcv",
++    .priv_data_size = sizeof(ASFTORCVBSFContext),
++    .filter         = asftorcv_filter,
++    .p.codec_ids    = codec_ids,
++};

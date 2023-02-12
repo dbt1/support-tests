@@ -1,0 +1,142 @@
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 2ca91bea8b..ecaf50047d 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -441,8 +441,12 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+         return AVERROR_INVALIDDATA;
+ 
+     av_freep(pb);
++
+     av_dict_copy(&tmp, *opts, 0);
+     av_dict_copy(&tmp, opts2, 0);
++    av_dict_set_int(&tmp, "reconnect", 1, 0);
++    av_dict_set_int(&tmp, "icy", 0, 0);
++
+     ret = avio_open2(pb, url, AVIO_FLAG_READ, c->interrupt_callback, &tmp);
+     if (ret >= 0) {
+         // update cookies on http response with setcookies.
+@@ -768,7 +772,8 @@ static int resolve_content_path(AVFormatContext *s, const char *url, int *max_ur
+     baseurl = xmlNodeGetContent(node);
+     root_url = (av_strcasecmp(baseurl, "")) ? baseurl : path;
+     if (node) {
+-        xmlNodeSetContent(node, root_url);
++        // HACK: SetContent fails if the URL happens to include '&', which isn't that uncommon...
++        //xmlNodeSetContent(node, root_url);
+         updated = 1;
+     }
+ 
+@@ -802,7 +807,7 @@ static int resolve_content_path(AVFormatContext *s, const char *url, int *max_ur
+                 memset(p + 1, 0, strlen(p));
+             }
+             av_strlcat(tmp_str, text + start, tmp_max_url_size);
+-            xmlNodeSetContent(baseurl_nodes[i], tmp_str);
++            //xmlNodeSetContent(baseurl_nodes[i], tmp_str);
+             updated = 1;
+             xmlFree(text);
+         }
+@@ -1217,6 +1222,7 @@ static int parse_manifest(AVFormatContext *s, const char *url, AVIOContext *in)
+     char *val  = NULL;
+     uint32_t period_duration_sec = 0;
+     uint32_t period_start_sec = 0;
++    char *nfcs_key = NULL;
+ 
+     if (!in) {
+         close_in = 1;
+@@ -1335,6 +1341,12 @@ static int parse_manifest(AVFormatContext *s, const char *url, AVIOContext *in)
+             } else if (!av_strcasecmp(node->name, "ProgramInformation")) {
+                 parse_programinformation(s, node);
+             }
++            // HACK: libvodstream stores decrypted keys in a custom tag.
++            if (!av_strcasecmp(node->name, (const char*)"nfcskey")) {
++                nfcs_key = xmlNodeGetContent(node->children);
++                c->cenc_decryption_key = av_strdup(nfcs_key);
++                xmlFree(nfcs_key);
++            }
+             node = xmlNextElementSibling(node);
+         }
+         if (!period_node) {
+@@ -1879,7 +1891,8 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
+     }
+     ffio_init_context(&pls->pb, avio_ctx_buffer, INITIAL_BUFFER_SIZE, 0,
+                       pls, read_data, NULL, c->is_live ? NULL : seek_data);
+-    pls->pb.pub.seekable = 0;
++    // PATCH: If this is 0, seeking in VOD streams downloads the entire content between origin and target.
++    pls->pb.pub.seekable = 1;
+ 
+     if ((ret = ff_copy_whiteblacklists(pls->ctx, s)) < 0)
+         goto fail;
+@@ -2167,6 +2180,7 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+     int ret = 0, i;
+     int64_t mints = 0;
+     struct representation *cur = NULL;
++    struct representation *curHack = NULL;
+     struct representation *rep = NULL;
+ 
+     recheck_discard_flags(s, c->videos, c->n_videos);
+@@ -2188,6 +2202,7 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+             continue;
+         if (!cur || rep->cur_timestamp < mints) {
+             cur = rep;
++            curHack = rep;
+             mints = rep->cur_timestamp;
+         }
+     }
+@@ -2203,6 +2218,7 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+     }
+ 
+     if (!cur) {
++        av_log(s, AV_LOG_WARNING, "INVALIDDATA\n");
+         return AVERROR_INVALIDDATA;
+     }
+     while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
+@@ -2221,6 +2237,26 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+             cur->is_restart_needed = 0;
+         }
+     }
++    if (curHack && curHack != cur) {
++        cur = curHack;
++        ret = 0;
++        while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
++            ret = av_read_frame(cur->ctx, pkt);
++            if (ret >= 0) {
++                /* If we got a packet, return it */
++                cur->cur_timestamp = av_rescale(pkt->pts, (int64_t)cur->ctx->streams[0]->time_base.num * 90000, cur->ctx->streams[0]->time_base.den);
++                pkt->stream_index = cur->stream_index;
++                return 0;
++            }
++            if (cur->is_restart_needed) {
++                cur->cur_seg_offset = 0;
++                cur->init_sec_buf_read_offset = 0;
++                ff_format_io_close(cur->parent, &cur->input);
++                ret = reopen_demux_for_component(s, cur);
++                cur->is_restart_needed = 0;
++            }
++        }
++    }
+     return AVERROR_EOF;
+ }
+ 
+@@ -2232,6 +2268,7 @@ static int dash_close(AVFormatContext *s)
+     free_subtitle_list(c);
+     av_dict_free(&c->avio_opts);
+     av_freep(&c->base_url);
++    av_freep(&c->cenc_decryption_key);
+     return 0;
+ }
+ 
+@@ -2319,10 +2356,11 @@ static int dash_read_seek(AVFormatContext *s, int stream_index, int64_t timestam
+         if (!ret)
+             ret = dash_seek(s, c->audios[i], seek_pos_msec, flags, !c->audios[i]->ctx);
+     }
+-    for (i = 0; i < c->n_subtitles; i++) {
+-        if (!ret)
+-            ret = dash_seek(s, c->subtitles[i], seek_pos_msec, flags, !c->subtitles[i]->ctx);
+-    }
++    // PATCH: Seeking in subtitle streams breaks things, and it doesn't seem necessary.
++    //for (i = 0; i < c->n_subtitles; i++) {
++    //    if (!ret)
++    //        ret = dash_seek(s, c->subtitles[i], seek_pos_msec, flags, !c->subtitles[i]->ctx);
++    //}
+ 
+     return ret;
+ }
