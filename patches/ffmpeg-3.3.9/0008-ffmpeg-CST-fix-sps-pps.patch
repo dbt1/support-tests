@@ -1,0 +1,29 @@
+From 1c7b83f945e710a17a41ad9feb7dc929f26f2b0e Mon Sep 17 00:00:00 2001
+From: Jacek Jendrzej <satbaby@kawaii.com>
+Date: Wed, 28 Jun 2017 11:38:20 +0200
+Subject: [PATCH] fix sps/pps for cooli;This is commit that breaks seek in some
+ mkv.break with commit 6d2219e9f950b96279fd8464cc11c4d02518b629
+
+---
+ libavcodec/h264_mp4toannexb_bsf.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/libavcodec/h264_mp4toannexb_bsf.c b/libavcodec/h264_mp4toannexb_bsf.c
+index 163d0f59ce..c895cf2829 100644
+--- a/libavcodec/h264_mp4toannexb_bsf.c
++++ b/libavcodec/h264_mp4toannexb_bsf.c
+@@ -235,6 +235,11 @@ static int h264_mp4toannexb_filter(AVBSFContext *ctx, AVPacket *out)
+         if (!s->new_idr && unit_type == 5 && (buf[1] & 0x80))
+             s->new_idr = 1;
+ 
++	if (s->new_idr && unit_type == 6 && s->idr_sps_seen && s->idr_pps_seen){
++		    s->idr_sps_seen= 0;
++		    s->idr_pps_seen= 0;
++	}
++
+         /* prepend only to the first type 5 NAL unit of an IDR picture, if no sps/pps are already present */
+         if (s->new_idr && unit_type == 5 && !s->idr_sps_seen && !s->idr_pps_seen) {
+             if ((ret=alloc_and_copy(out,
+-- 
+2.13.2
+
