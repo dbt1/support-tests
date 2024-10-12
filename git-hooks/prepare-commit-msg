@@ -1,0 +1,97 @@
+#!/bin/bash
+
+LOG_FILE=".git/logs/commit_hook.log"
+mkdir -p "$(dirname "$LOG_FILE")"
+
+echo "Parameter \$1 (Path to commit message file): '$1'" >> "$LOG_FILE"
+echo "Parameter \$2 (Commit type): '$2'" >> "$LOG_FILE"
+
+case "$2" in
+  "")
+    echo "Normal commit detected. Continuing..." >> "$LOG_FILE"
+    ;;
+  "commit")
+    echo "Amend commit detected. Continuing..." >> "$LOG_FILE"
+    ;;
+  "message")
+    echo "Commit with message via -m or -F detected. Skipping hook..." >> "$LOG_FILE"
+    exit 0
+    ;;
+  "merge"|"squash")
+    echo "Merge or Squash commit detected. Skipping hook..." >> "$LOG_FILE"
+    exit 0
+    ;;
+  *)
+    echo "Unknown commit type '$2'. Skipping hook..." >> "$LOG_FILE"
+    exit 0
+    ;;
+esac
+
+if [ -z "$OPENAI_API_KEY" ]; then
+    echo "OPENAI_API_KEY is not set. Commit without automatic message." >> "$LOG_FILE"
+    exit 0
+fi
+
+DIFF=$(git diff --cached)
+
+{
+  echo "----------------------------------------"
+  echo "Commit hook executed on: $(date)"
+  echo "Branch: $(git rev-parse --abbrev-ref HEAD)"
+  echo "Diff:"
+  echo "$DIFF"
+} >> "$LOG_FILE"
+
+# Check if diff is empty
+if [ -z "$DIFF" ]; then
+  echo "No staged diff found. Skipping hook..." >> "$LOG_FILE"
+  exit 0
+fi
+
+# Create JSON body with jq
+JSON_BODY=$(jq -n \
+  --arg model "gpt-3.5-turbo" \
+  --arg content1 "You are a helpful assistant that generates concise and descriptive Git commit messages based on the provided diff. Ensure that the commit message follows Conventional Commits standards." \
+  --arg content2 "Generate a commit message based on the following diff:\n\n$DIFF" \
+  --argjson max_tokens 150 \
+  --argjson temperature 0.7 \
+  '{
+    model: $model,
+    messages: [
+      {role: "system", content: $content1},
+      {role: "user", content: $content2}
+    ],
+    max_tokens: $max_tokens,
+    temperature: $temperature
+  }')
+
+API_RESPONSE=$(curl -s -w "\n%{http_code}" https://api.openai.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -d "$JSON_BODY"
+)
+
+HTTP_STATUS=$(echo "$API_RESPONSE" | tail -n1)
+API_BODY=$(echo "$API_RESPONSE" | sed '$d')
+
+echo "API Response: $API_BODY" >> "$LOG_FILE"
+
+if [ "$HTTP_STATUS" -ne 200 ]; then
+  echo "Error during API call. Status code: $HTTP_STATUS" >> "$LOG_FILE"
+  exit 1
+fi
+
+COMMIT_MESSAGE=$(echo "$API_BODY" | jq -r '.choices[0].message.content' | sed 's/^ *//;s/ *$//')
+
+echo "Received commit message:" >> "$LOG_FILE"
+echo "$COMMIT_MESSAGE" >> "$LOG_FILE"
+
+if [ -z "$COMMIT_MESSAGE" ] || [ "$COMMIT_MESSAGE" == "null" ]; then
+    echo "No valid commit message received from OpenAI. Commit without automatic message." >> "$LOG_FILE"
+    exit 0
+fi
+
+# Write the commit message to the commit message file
+echo "$COMMIT_MESSAGE" > "$1"
+
+echo "Commit message written to $1." >> "$LOG_FILE"

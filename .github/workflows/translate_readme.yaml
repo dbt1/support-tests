@@ -1,0 +1,194 @@
+name: Translate READMEs and Generate Main README
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install openai
+
+      - name: Run translation script
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python - <<EOF
+          import openai
+          import os
+          import re
+          import glob
+
+          openai.api_key = os.getenv('OPENAI_API_KEY')
+
+          # Define the target languages you want to support
+          target_languages = {
+              'en': 'English',
+              'de': 'German',
+              'fr': 'French',
+              'es': 'Spanish',
+              # Fügen Sie weitere Sprachen hinzu, falls gewünscht
+          }
+
+          # Initialize a set to keep track of available languages
+          available_languages = set()
+
+          # Find all README_<lang>.md files
+          readme_files = glob.glob('**/README_*.md', recursive=True)
+
+          for readme_file in readme_files:
+              # Extract the language code from the filename
+              base_name = os.path.basename(readme_file)
+              dir_name = os.path.dirname(readme_file)
+              parts = base_name.split('_')
+              if len(parts) != 2:
+                  print(f"Skipping invalid filename format: {readme_file}")
+                  continue
+              lang_code_ext = parts[1]  # e.g., 'de.md'
+              lang_code = lang_code_ext.split('.')[0]  # e.g., 'de'
+
+              if lang_code not in target_languages:
+                  print(f"Language code {lang_code} not supported. Skipping {readme_file}")
+                  continue
+
+              # Read the source file
+              with open(readme_file, 'r') as file:
+                  content = file.read()
+
+              # Detect the language of the text
+              def detect_language(text):
+                  try:
+                      response = openai.Completion.create(
+                          engine="text-davinci-003",
+                          prompt=f"Detect the language of the following text:\n\n{text}",
+                          max_tokens=5,
+                          temperature=0
+                      )
+                      detected_lang = response.choices[0].text.strip().lower()
+                      return detected_lang
+                  except Exception as e:
+                      print(f"OpenAI API error during language detection: {e}")
+                      return None
+
+              detected_lang = detect_language(content)
+              print(f"Detected language of {readme_file}: {detected_lang}")
+
+              # Ensure detected language matches the language code in filename
+              if detected_lang and detected_lang not in target_languages[lang_code].lower():
+                  print(f"Mismatch between detected language ({detected_lang}) and filename language code ({lang_code}). Skipping {readme_file}")
+                  continue
+
+              # Add the source language to the list of available languages
+              available_languages.add(lang_code)
+
+              # Determine target languages (all except the source language)
+              dest_langs = [code for code in target_languages if code != lang_code]
+
+              for dest_lang in dest_langs:
+                  target_lang_name = target_languages[dest_lang]
+                  print(f"Translating {readme_file} from {target_languages[lang_code]} to {target_lang_name}")
+
+                  # Extract code blocks and replace them with placeholders
+                  code_blocks = re.findall(r'```.*?```', content, re.DOTALL)
+                  placeholder_template = "[CODE_BLOCK_{}]"
+                  content_placeholder = content
+                  for i, code_block in enumerate(code_blocks):
+                      placeholder = placeholder_template.format(i)
+                      content_placeholder = content_placeholder.replace(code_block, placeholder)
+
+                  # Prepare the prompt
+                  prompt = f"""Translate the following text from {target_languages[lang_code]} to {target_lang_name}. Do not translate the placeholders like {placeholder_template.format('X')}.
+
+                  Text:
+                  {content_placeholder}
+                  """
+
+                  # Perform the translation
+                  try:
+                      response = openai.Completion.create(
+                          engine="text-davinci-003",
+                          prompt=prompt,
+                          max_tokens=3500,
+                          temperature=0,
+                          stop=None
+                      )
+                      translated_content = response.choices[0].text.strip()
+                  except Exception as e:
+                      print(f"OpenAI API error during translation: {e}")
+                      continue
+
+                  # Replace placeholders with original code blocks
+                  for i, code_block in enumerate(code_blocks):
+                      placeholder = placeholder_template.format(i)
+                      translated_content = translated_content.replace(placeholder, code_block)
+
+                  # Add remark at the beginning with link to reference README
+                  reference_readme = f"README_{lang_code}.md"
+                  remark = f"This README was automatically translated from {target_languages[lang_code]} to {target_lang_name}. " \
+                           f"See the [original]({reference_readme}) for reference.\n\n"
+                  translated_content = remark + translated_content
+
+                  # Write the translated text to README_<dest_lang>.md
+                  translated_file = os.path.join(dir_name, f"README_{dest_lang}.md")
+                  with open(translated_file, 'w') as file:
+                      file.write(translated_content)
+                  print(f"Translated README saved to {translated_file}")
+
+                  # Add the destination language to the list of available languages
+                  available_languages.add(dest_lang)
+
+          # Generate or update the main README.md with links to all languages
+          main_readme_content = "# Project Documentation\n\n"
+          main_readme_content += "This project documentation is available in the following languages:\n\n"
+
+          for lang_code in sorted(available_languages):
+              lang_name = target_languages.get(lang_code, lang_code)
+              main_readme_content += f"- [{lang_name}](README_{lang_code}.md)\n"
+
+          # Add any additional notes or content in English
+          additional_notes = """
+Please choose your preferred language by clicking on the links above.
+"""
+
+          main_readme_content += additional_notes
+
+          # Write the main README.md
+          with open('README.md', 'w') as file:
+              file.write(main_readme_content)
+
+          print("Generated or updated the main README.md with links to localized READMEs.")
+          EOF
+
+      - name: Check for changes
+        id: git_status
+        run: |
+          if git diff --quiet; then
+            echo "CHANGES=false" >> $GITHUB_ENV
+            echo "No changes detected."
+          else
+            echo "CHANGES=true" >> $GITHUB_ENV
+            echo "Changes detected."
+          fi
+
+      - name: Commit changes
+        if: env.CHANGES == 'true'
+        run: |
+          git config --local user.name "GitHub Action"
+          git config --local user.email "action@github.com"
+          git add $(find . -name "README_*.md")
+          git add README.md
+          git commit -m "Auto translated READMEs and updated main README.md"
+          git push
