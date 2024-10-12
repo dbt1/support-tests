@@ -115,10 +115,10 @@ Einige Hooks benutzen die OpenAI API. Um diese Hooks effektiv zu nutzen, benöti
    Besuche die [OpenAI API Website](https://beta.openai.com/signup/) und melde dich an, um einen API-Schlüssel zu erhalten. Nach der Anmeldung findest du den Schlüssel in deinem Dashboard unter `API Keys`.
 
    Hier eine Schätzung der Kosten: Mit einem Budget von 10 USD kannst du je nach verwendetem Modell ungefähr die folgende Anzahl von API-Anfragen stellen:
-   - **GPT-3.5-turbo**: etwa 50.000 Anfragen
-   - **GPT-4 (8k context window)**: etwa 1.111 Anfragen
-   - **GPT-4 (32k context window)**: etwa 555 Anfragen
-   - **GPT-3.5 (text-davinci-003)**: etwa 5.000 Anfragen
-   - **GPT-3.5 (text-curie-001)**: etwa 50.000 Anfragen
+   - **GPT-3.5-turbo**: ca. 50.000 Anfragen
+   - **GPT-4 (8k context window)**: ca. 1.111 Anfragen
+   - **GPT-4 (32k context window)**: ca. 555 Anfragen
+   - **GPT-3.5 (text-davinci-003)**: ca. 5.000 Anfragen
+   - **GPT-3.5 (text-curie-001)**: ca. 50.000 Anfragen
 
 Genaueres erfährst du direkt bei [OpenAI Pricing](https://openai.com/api/pricing/)
