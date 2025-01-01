@@ -1,0 +1,58 @@
+name: Tagging Workflow
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/**'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Ensures that all tags are downloaded
+
+      - name: Setup Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install GitPython
+          curl -o tagit.py https://raw.githubusercontent.com/dbt1/tagit/master/tagit.py
+          chmod +x tagit.py
+
+      - name: Verify tagit.py download
+        run: |
+          if [ ! -f tagit.py ]; then
+            echo "tagit.py was not downloaded!"
+            exit 1
+          fi
+
+      - name: Tagging
+        run: |
+          python tagit.py -f configure.ac --no-tag
+
+      - name: Set committer info from last commit
+        run: |
+          LAST_COMMITTER_NAME=$(git log -1 --pretty=format:'%an')
+          LAST_COMMITTER_EMAIL=$(git log -1 --pretty=format:'%ae')
+          git config --global user.name "$LAST_COMMITTER_NAME"
+          git config --global user.email "$LAST_COMMITTER_EMAIL"
+          echo "Using committer: $LAST_COMMITTER_NAME <$LAST_COMMITTER_EMAIL>"
+
+      - name: Commit and push changes
+        run: |
+          git add configure.ac
+          git commit -m "Auto update configure.ac to match the current Git version" || echo "No changes to commit"
+          git push
