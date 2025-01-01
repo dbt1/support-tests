@@ -30,6 +30,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install GitPython
           curl -o tagit.py https://raw.githubusercontent.com/dbt1/tagit/master/tagit.py
+          curl -o tagit.py https://raw.githubusercontent.com/dbt1/tagit/master/tagit-config.json
           chmod +x tagit.py
 
       - name: Verify tagit.py download
@@ -38,11 +39,7 @@ jobs:
             echo "tagit.py was not downloaded!"
             exit 1
           fi
-
-      - name: Tagging
-        run: |
-          python tagit.py -f configure.ac --no-tag
-
+          
       - name: Set committer info from last commit
         run: |
           LAST_COMMITTER_NAME=$(git log -1 --pretty=format:'%an')
@@ -50,6 +47,10 @@ jobs:
           git config --global user.name "$LAST_COMMITTER_NAME"
           git config --global user.email "$LAST_COMMITTER_EMAIL"
           echo "Using committer: $LAST_COMMITTER_NAME <$LAST_COMMITTER_EMAIL>"
+
+      - name: Tagging
+        run: |
+          python tagit.py -f configure.ac --no-tag
 
       - name: Commit and push changes
         run: |
